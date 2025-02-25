@@ -3,39 +3,42 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const bodyParser = require('body-parser');
+const cors = require('cors');
 
 const app = express();
+
+// Enable CORS so requests from your Chrome extension are allowed.
+app.use(cors({
+    origin: '*', // or restrict to your extension's origin if desired
+}));
 app.use(bodyParser.json());
 
 // ---------- MONGODB CONNECTION ----------
-mongoose.connect('mongodb+srv://dharshanrajpa:Dharshan2004@dharshanrajpacluster0.71qop.mongodb.net/linkedin', {
-    useNewUrlParser: true,
-    useUnifiedTopology: true
-})
+mongoose.connect('mongodb+srv://dharshanrajpa:Dharshan2004@dharshanrajpacluster0.71qop.mongodb.net/linkedin')
     .then(() => console.log('MongoDB connected'))
     .catch(err => console.error('MongoDB connection error:', err));
 
 // ---------- SCHEMA & MODEL DEFINITIONS ----------
 
-// 1) Member Collection
-// Use entityUrn as _id.
-const memberSchema = new mongoose.Schema({
-    _id: { type: String, required: true }, // entityUrn
+// 1) login Collection (for member login details)
+const loginSchema = new mongoose.Schema({
+    _id: { type: String, required: true }, // We'll use publicIdentifier as _id
     firstName: { type: String },
     lastName: { type: String },
     premiumSubscriber: { type: Boolean },
-    plainId: { type: String },
+    plainId: { type: Number },  // Using Number for Long
     trackingId: { type: String },
     publicIdentifier: { type: String },
     jsessionId: { type: String },
-    updateTs: { type: Date, default: Date.now },
-    createTs: { type: Date, default: Date.now }
+    lastActiveTs: { type: Date, default: Date.now },
+    createTs: { type: Date, default: Date.now },
+    updateTs: { type: Date, default: Date.now }
 });
 
-const Member = mongoose.model('Member', memberSchema);
+const Login = mongoose.model('Login', loginSchema);
 
-// 2) profilesDetails Collection
-const profilesDetailsSchema = new mongoose.Schema({
+// 2) person_details Collection
+const profileDetailsSchema = new mongoose.Schema({
     memberId: { type: String, required: true },
     publicIdentifier: { type: String, required: true },
     tags: { type: [String], default: [] },
@@ -44,49 +47,51 @@ const profilesDetailsSchema = new mongoose.Schema({
     updateTs: { type: Date, default: Date.now }
 });
 
-const ProfilesDetails = mongoose.model('profilesDetails', profilesDetailsSchema);
+const ProfileDetails = mongoose.model('ProfileDetails', profileDetailsSchema);
 
 // ---------- API ENDPOINTS ----------
 
-// POST /member - Update or insert Member document.
-app.post('/member', async (req, res) => {
+// POST /login API: Upsert a Login document.
+app.post('/login', async (req, res) => {
     try {
-        const memberData = req.body;
-        if (!memberData.entityUrn) {
-            return res.status(400).json({ error: "entityUrn is required." });
+        const loginData = req.body;
+        // Ensure publicIdentifier is present (and use it as _id)
+        if (!loginData.publicIdentifier) {
+            return res.status(400).json({ error: "publicIdentifier is required." });
         }
-        // Upsert the Member document based on the entityUrn.
-        const updatedMember = await Member.findOneAndUpdate(
-            { _id: memberData.entityUrn },
+        // Upsert based on publicIdentifier.
+        const updatedLogin = await Login.findOneAndUpdate(
+            { _id: loginData.publicIdentifier },
             {
                 $set: {
-                    firstName: memberData.firstName,
-                    lastName: memberData.lastName,
-                    premiumSubscriber: memberData.premiumSubscriber,
-                    plainId: memberData.plainId,
-                    trackingId: memberData.trackingId,
-                    publicIdentifier: memberData.publicIdentifier,
-                    jsessionId: memberData.jsessionId,
+                    firstName: loginData.firstName,
+                    lastName: loginData.lastName,
+                    premiumSubscriber: loginData.premiumSubscriber,
+                    plainId: loginData.plainId,
+                    trackingId: loginData.trackingId,
+                    publicIdentifier: loginData.publicIdentifier,
+                    jsessionId: loginData.jsessionId,
+                    lastActiveTs: new Date(),
                     updateTs: new Date()
                 },
                 $setOnInsert: { createTs: new Date() }
             },
             { new: true, upsert: true }
         );
-        res.json(updatedMember);
+        res.json(updatedLogin);
     } catch (err) {
-        console.error("Error in POST /member:", err);
+        console.error("Error in POST /login:", err);
         res.status(500).json({ error: "Internal Server Error" });
     }
 });
 
-// POST /details API for profilesDetails
+// POST /details API for person_details.
 // Payload example:
 // {
 //   "tags": ["tag1", "tag2"],
-//   "notes": "....",
-//   "memberId": "....",
-//   "publicIdentifier": "url"  // remove any query string portion
+//   "notes": "Some notes",
+//   "memberId": "someMemberId",
+//   "publicIdentifier": "https://www.linkedin.com/in/someprofile"   // any query parameters removed
 // }
 app.post('/details', async (req, res) => {
     try {
@@ -94,12 +99,12 @@ app.post('/details', async (req, res) => {
         if (!memberId || !publicIdentifier) {
             return res.status(400).json({ error: "memberId and publicIdentifier are required." });
         }
-        // Remove query parameters from publicIdentifier if present.
+        // Remove query parameters from publicIdentifier.
         const qIdx = publicIdentifier.indexOf("?");
         if (qIdx !== -1) {
             publicIdentifier = publicIdentifier.substring(0, qIdx);
         }
-        const updatedDoc = await ProfilesDetails.findOneAndUpdate(
+        const updatedDoc = await PersonDetails.findOneAndUpdate(
             { memberId, publicIdentifier },
             {
                 $set: { tags, notes, updateTs: new Date() },
@@ -114,8 +119,7 @@ app.post('/details', async (req, res) => {
     }
 });
 
-// GET /details API
-// Query parameters: memberId and publicIdentifier.
+// GET /details API: Retrieve details (tags and notes) for given memberId and publicIdentifier.
 app.get('/details', async (req, res) => {
     try {
         let { memberId, publicIdentifier } = req.query;
@@ -126,7 +130,7 @@ app.get('/details', async (req, res) => {
         if (qIdx !== -1) {
             publicIdentifier = publicIdentifier.substring(0, qIdx);
         }
-        const doc = await ProfilesDetails.findOne(
+        const doc = await PersonDetails.findOne(
             { memberId, publicIdentifier },
             { tags: 1, notes: 1, _id: 0 }
         );
